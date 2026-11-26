@@ -30,6 +30,7 @@ import jakarta.xml.bind.JAXBException;
 import jakarta.xml.bind.Marshaller;
 import jakarta.xml.bind.Unmarshaller;
 import jakarta.xml.bind.annotation.XmlRootElement;
+import javax.xml.XMLConstants;
 import javax.xml.namespace.QName;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -55,6 +56,14 @@ import org.xml.sax.SAXException;
 public class DomXmlDataFormat implements DataFormat {
 
   protected static final DomXmlLogger LOG = ExternalTaskClientLogger.XML_FORMAT_LOGGER;
+
+  protected static final String EXTERNAL_GENERAL_ENTITIES = "http://xml.org/sax/features/external-general-entities";
+  protected static final String DISALLOW_DOCTYPE_DECL = "http://apache.org/xml/features/disallow-doctype-decl";
+  protected static final String LOAD_EXTERNAL_DTD = "http://apache.org/xml/features/nonvalidating/load-external-dtd";
+  protected static final String EXTERNAL_PARAMETER_ENTITIES = "http://xml.org/sax/features/external-parameter-entities";
+  protected static final String JAXP_ACCESS_EXTERNAL_SCHEMA = "http://javax.xml.XMLConstants/property/accessExternalSchema";
+  protected static final String JAXP_ACCESS_EXTERNAL_SCHEMA_SYSTEM_PROPERTY = "javax.xml.accessExternalSchema";
+  protected static final String JAXP_ACCESS_EXTERNAL_SCHEMA_ALL = "all";
 
   protected String name;
 
@@ -284,7 +293,67 @@ public class DomXmlDataFormat implements DataFormat {
     documentBuilderFactory.setIgnoringElementContentWhitespace(false);
     LOG.documentBuilderFactoryConfiguration("ignoringElementContentWhitespace", "false");
 
+    disableXxeProcessing(documentBuilderFactory);
+    enableSecureProcessing(documentBuilderFactory);
+
     return documentBuilderFactory;
+  }
+
+  /*
+   * Configures the DocumentBuilderFactory in a way, that it is protected against
+   * XML External Entity Attacks. If the implementing parser does not support one or
+   * multiple features, the failed feature is ignored. The parser might not be protected,
+   * if the feature assignment fails.
+   *
+   * @see <a href="https://www.owasp.org/index.php/XML_External_Entity_(XXE)_Prevention_Cheat_Sheet">OWASP Information of XXE attacks</a>
+   *
+   * @param dbf The factory to configure.
+   */
+  protected static void disableXxeProcessing(DocumentBuilderFactory dbf) {
+    try {
+      dbf.setFeature(EXTERNAL_GENERAL_ENTITIES, false);
+      dbf.setFeature(DISALLOW_DOCTYPE_DECL, true);
+      dbf.setFeature(LOAD_EXTERNAL_DTD, false);
+      dbf.setFeature(EXTERNAL_PARAMETER_ENTITIES, false);
+    } catch (ParserConfigurationException ignored) {
+      // ignore
+    }
+    dbf.setXIncludeAware(false);
+    dbf.setExpandEntityReferences(false);
+  }
+
+  /*
+   * Configures the DocumentBuilderFactory to process XML securely.
+   * If the implementing parser does not support one or multiple features,
+   * the failed feature is ignored. The parser might not be protected,
+   * if the feature assignment fails.
+   *
+   * @param dbf The factory to configure.
+   */
+  protected static void enableSecureProcessing(DocumentBuilderFactory dbf) {
+    try {
+      dbf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+      dbf.setAttribute(JAXP_ACCESS_EXTERNAL_SCHEMA, resolveAccessExternalSchemaProperty());
+    } catch (ParserConfigurationException | IllegalArgumentException ignored) {
+      // ignored
+    }
+  }
+
+  /*
+   * JAXP allows users to override the default value via system properties and
+   * a central properties file (see https://docs.oracle.com/javase/tutorial/jaxp/properties/scope.html).
+   * However, both are overridden by an explicit configuration in code, as we apply it.
+   * Since we want users to customize the value, we take the system property into account.
+   * The properties file is not supported at the moment.
+   */
+  protected static String resolveAccessExternalSchemaProperty() {
+    String systemProperty = System.getProperty(JAXP_ACCESS_EXTERNAL_SCHEMA_SYSTEM_PROPERTY);
+
+    if (systemProperty != null) {
+      return systemProperty;
+    } else {
+      return JAXP_ACCESS_EXTERNAL_SCHEMA_ALL;
+    }
   }
 
   public static Class<?> loadClass(String classname, DataFormat dataFormat) {
