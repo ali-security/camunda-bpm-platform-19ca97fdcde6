@@ -1,0 +1,74 @@
+name: Seal build - camunda-external-task-client
+
+# Upstream builds and tests on Jenkins (Jenkinsfile + .ci/config/stage-types.yaml:
+# `install -Pdistro,distro-ce` on maven:3.9.7-eclipse-temurin-17), which runs the
+# client module's surefire unit tests and its failsafe ITs against a cargo-started
+# Tomcat. This workflow runs the same two test phases for clients/java/client.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Optional test selector passed to -Dtest / -Dit.test'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: 3.9.7
+
+      - name: Build client and its reactor dependencies (no tests)
+        run: >
+          mvn -B -V install -Pdistro -pl clients/java/client -am
+          -DskipTests -Dskip.frontend.build=true
+
+      - name: Test client (surefire unit tests + failsafe ITs on Tomcat)
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            mvn -B verify -Pdistro -pl clients/java/client -Dskip.frontend.build=true \
+              -Dtest='${{ inputs.test-filter }}' -Dit.test='${{ inputs.test-filter }}' \
+              -Dsurefire.failIfNoSpecifiedTests=false -Dfailsafe.failIfNoSpecifiedTests=false
+          else
+            mvn -B verify -Pdistro -pl clients/java/client -Dskip.frontend.build=true
+          fi
+
+      - name: Report skipped tests with reasons
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import glob, xml.etree.ElementTree as ET
+          tot = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+          skips = []
+          for d in ("surefire-reports", "failsafe-reports"):
+              for f in sorted(glob.glob(f"clients/java/client/target/{d}/TEST-*.xml")):
+                  r = ET.parse(f).getroot()
+                  for k in tot:
+                      tot[k] += int(r.get(k, 0) or 0)
+                  for tc in r.iter("testcase"):
+                      s = tc.find("skipped")
+                      if s is not None:
+                          msg = (s.get("message") or (s.text or "")).strip().replace("\n", " ")[:200]
+                          skips.append(f"SKIPPED: {tc.get('classname')}.{tc.get('name')} -- {msg or 'no message given by runner'}")
+          for s in skips:
+              print(s)
+          print(f"CLIENT TEST TOTAL (unit + IT): tests={tot['tests']} failures={tot['failures']} errors={tot['errors']} skipped={tot['skipped']} passed={tot['tests']-tot['failures']-tot['errors']-tot['skipped']}")
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camunda-external-task-client
+          path: clients/java/client/target/camunda-external-task-client-7.24.0.jar
+          if-no-files-found: error
